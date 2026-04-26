@@ -1,27 +1,26 @@
+'use client'
+
 import Link from 'next/link'
-import { ArrowRight, Shield, Star, Zap, Package } from 'lucide-react'
+import { ArrowRight, Shield, Truck, Star, Sparkles, Zap, Heart, Package } from 'lucide-react'
 import Layout from '@/components/Layout'
 import Carousel from '@/components/Carousel'
-import { db } from '@/lib/db'
-import { getProductUrlSegment } from '@/lib/utils'
+import { useSettings } from '@/lib/settings'
+import { useState, useEffect } from 'react'
 
 interface Product {
   id: string
   title: string
   slug: string
-  asin?: string | null
   mainImage: string
   price: number
   originalPrice?: number
-  variantOptionPrices?: string | null
-  variantOptionOriginalPrices?: string | null
-  variantOptionTitles?: string | null
   featured: boolean
   avgRating?: number
   reviewCount?: number
 }
 
 interface HomeContent {
+  id: string
   featuredTitle: string
   featuredSubtitle: string
   whyChooseTitle: string
@@ -44,130 +43,57 @@ interface CarouselItem {
   link?: string | null
   btnText?: string | null
   newTab?: boolean | null
+  active: boolean
 }
 
-const defaultHomeContent: HomeContent = {
-  featuredTitle: 'Featured Products',
-  featuredSubtitle: 'Discover our carefully curated collection of premium products, each selected for exceptional quality and design.',
-  whyChooseTitle: 'Why Choose Your Brand',
-  whyChooseSubtitle: "We're redefining the shopping experience with uncompromising quality, innovative design, and customer-first approach.",
-  feature1Title: 'Premium Quality',
-  feature1Description: 'Every product undergoes rigorous quality testing to ensure it meets our exceptional standards.',
-  feature2Title: 'Secure & Trusted',
-  feature2Description: 'Advanced security measures protect your data with enterprise-grade encryption and privacy.',
-  feature3Title: 'Lightning Fast',
-  feature3Description: 'Optimized delivery network ensures your orders arrive quickly and in perfect condition.',
-  carouselEnabled: true,
-  carouselInterval: 5000,
-}
+export default function Home() {
+  const { settings } = useSettings()
+  const [featuredProducts, setFeaturedProducts] = useState<Product[]>([])
+  const [homeContent, setHomeContent] = useState<HomeContent | null>(null)
+  const [carouselItems, setCarouselItems] = useState<CarouselItem[]>([])
+  const [loading, setLoading] = useState(true)
 
-async function getSiteName(): Promise<string> {
-  try {
-    const rows = await db.siteSettings.findMany({ where: { key: 'siteName' } })
-    const v = rows?.[0]?.value
-    if (typeof v === 'string' && v.trim()) return v.trim()
-  } catch {}
-  return 'Your Brand'
-}
+  useEffect(() => {
+    fetchData()
+  }, [])
 
-async function getFeaturedProducts(): Promise<Product[]> {
-  try {
-    const products = await db.product.findMany({
-      where: { featured: true, active: true },
-      include: { category: true, brandRelation: true },
-      orderBy: [{ sortOrder: 'asc' }, { createdAt: 'desc' }],
-      take: 3,
-    })
+  const fetchData = async () => {
+    try {
+      // 并行获取产品、首页内容和轮播图
+      const [productsResponse, contentResponse, carouselResponse] = await Promise.all([
+        fetch('/api/products?featured=true&limit=3'),
+        fetch('/api/home-content'),
+        fetch('/api/carousel')
+      ])
 
-    const ids = products.map((p: any) => p.id)
-    let aggMap: Record<string, { avgRating: number; reviewCount: number }> = {}
-    if (ids.length > 0) {
-      try {
-        const groups = await (db as any).productReview.groupBy({
-          by: ['productId'],
-          where: { productId: { in: ids }, isVisible: true },
-          _avg: { rating: true },
-          _count: { _all: true },
-        })
-        aggMap = Object.fromEntries(
-          groups.map((g: any) => [
-            g.productId,
-            {
-              avgRating: typeof g._avg?.rating === 'number' ? Math.round(g._avg.rating * 10) / 10 : 0,
-              reviewCount: typeof g._count?._all === 'number' ? g._count._all : 0,
-            },
-          ])
-        )
-      } catch {}
+      if (productsResponse.ok) {
+        const productsData = await productsResponse.json()
+        setFeaturedProducts(productsData)
+      }
+
+      if (contentResponse.ok) {
+        const contentData = await contentResponse.json()
+        setHomeContent(contentData)
+      }
+
+      if (carouselResponse.ok) {
+        const carouselData = await carouselResponse.json()
+        // Only show active items on frontend
+        setCarouselItems(carouselData.filter((item: CarouselItem) => item.active))
+      }
+    } catch (error) {
+      console.error('Failed to fetch data:', error)
+    } finally {
+      setLoading(false)
     }
-
-    return products.map((p: any) => ({
-      ...p,
-      avgRating: aggMap[p.id]?.avgRating ?? 0,
-      reviewCount: aggMap[p.id]?.reviewCount ?? 0,
-    }))
-  } catch {
-    return []
   }
-}
-
-async function getHomeContent(): Promise<HomeContent> {
-  try {
-    const row = await db.homeContent.findFirst()
-    if (!row) return defaultHomeContent
-    return {
-      featuredTitle: row.featuredTitle || defaultHomeContent.featuredTitle,
-      featuredSubtitle: row.featuredSubtitle || defaultHomeContent.featuredSubtitle,
-      whyChooseTitle: row.whyChooseTitle || defaultHomeContent.whyChooseTitle,
-      whyChooseSubtitle: row.whyChooseSubtitle || defaultHomeContent.whyChooseSubtitle,
-      feature1Title: row.feature1Title || defaultHomeContent.feature1Title,
-      feature1Description: row.feature1Description || defaultHomeContent.feature1Description,
-      feature2Title: row.feature2Title || defaultHomeContent.feature2Title,
-      feature2Description: row.feature2Description || defaultHomeContent.feature2Description,
-      feature3Title: row.feature3Title || defaultHomeContent.feature3Title,
-      feature3Description: row.feature3Description || defaultHomeContent.feature3Description,
-      carouselEnabled: row.carouselEnabled ?? defaultHomeContent.carouselEnabled,
-      carouselInterval: row.carouselInterval ?? defaultHomeContent.carouselInterval,
-    }
-  } catch {
-    return defaultHomeContent
-  }
-}
-
-async function getCarouselItems(): Promise<CarouselItem[]> {
-  try {
-    const items = await db.carouselItem.findMany({
-      where: { active: true },
-      orderBy: { order: 'asc' },
-    })
-    return items.map((i: any) => ({
-      id: i.id,
-      title: i.title,
-      description: i.description,
-      imageUrl: i.imageUrl,
-      link: i.link,
-      btnText: i.btnText,
-      newTab: i.newTab,
-    }))
-  } catch {
-    return []
-  }
-}
-
-export default async function Home() {
-  const [siteName, featuredProducts, homeContent, carouselItems] = await Promise.all([
-    getSiteName(),
-    getFeaturedProducts(),
-    getHomeContent(),
-    getCarouselItems(),
-  ])
 
   return (
     <Layout>
       {/* Carousel Section */}
-      {(homeContent.carouselEnabled !== false && carouselItems.length > 0) && (
+      {(!loading && homeContent?.carouselEnabled !== false && carouselItems.length > 0) && (
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 mt-8">
-          <Carousel items={carouselItems} interval={homeContent.carouselInterval || 5000} />
+          <Carousel items={carouselItems} interval={homeContent?.carouselInterval || 5000} />
         </div>
       )}
 
@@ -184,15 +110,36 @@ export default async function Home() {
 
         <div className="relative max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-16">
-            <h1 className="text-4xl md:text-6xl font-bold text-gray-900 mb-6 tracking-tight">
-              {homeContent.featuredTitle}
-            </h1>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
-              {homeContent.featuredSubtitle}
-            </p>
+            {loading ? (
+              <>
+                <div className="h-10 md:h-16 bg-gray-200 rounded-lg w-64 mx-auto mb-6 animate-pulse"></div>
+                <div className="h-6 bg-gray-200 rounded w-full max-w-2xl mx-auto animate-pulse"></div>
+              </>
+            ) : (
+              <>
+                <h1 className="text-4xl md:text-6xl font-bold text-gray-900 mb-6 tracking-tight">
+                  {homeContent?.featuredTitle || 'Featured Products'}
+                </h1>
+                <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
+                  {homeContent?.featuredSubtitle || 'Discover our carefully curated collection of premium products, each selected for exceptional quality and design.'}
+                </p>
+              </>
+            )}
           </div>
           
-          {featuredProducts.length > 0 ? (
+          {loading ? (
+            <div className="grid md:grid-cols-3 gap-8 lg:gap-12">
+              {[1, 2, 3].map((i) => (
+                <div key={i} className="bg-white rounded-3xl shadow-sm border border-gray-100 overflow-hidden animate-pulse">
+                  <div className="aspect-square bg-gray-200"></div>
+                  <div className="p-6">
+                    <div className="h-6 bg-gray-200 rounded mb-3"></div>
+                    <div className="h-4 bg-gray-200 rounded w-2/3"></div>
+                  </div>
+                </div>
+              ))}
+            </div>
+          ) : featuredProducts.length > 0 ? (
             <div className="grid md:grid-cols-3 gap-8 lg:gap-12">
               {featuredProducts.map((product) => (
                 <ProductCard key={product.id} product={product} />
@@ -224,35 +171,57 @@ export default async function Home() {
       <section className="py-24 bg-white relative">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="text-center mb-20">
-            <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6 tracking-tight">
-              {homeContent.whyChooseTitle || `Why Choose ${siteName}`}
-            </h2>
-            <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
-              {homeContent.whyChooseSubtitle}
-            </p>
+            {loading ? (
+              <>
+                <div className="h-10 md:h-14 bg-gray-200 rounded-lg w-64 mx-auto mb-6 animate-pulse"></div>
+                <div className="h-6 bg-gray-200 rounded w-full max-w-2xl mx-auto animate-pulse"></div>
+              </>
+            ) : (
+              <>
+                <h2 className="text-4xl md:text-5xl font-bold text-gray-900 mb-6 tracking-tight">
+                  {homeContent?.whyChooseTitle || `Why Choose ${settings.siteName}`}
+                </h2>
+                <p className="text-xl text-gray-600 max-w-3xl mx-auto leading-relaxed">
+                  {homeContent?.whyChooseSubtitle || "We're redefining the shopping experience with uncompromising quality, innovative design, and customer-first approach."}
+                </p>
+              </>
+            )}
           </div>
           
           <div className="grid md:grid-cols-3 gap-8 lg:gap-12">
-            <FeatureCard
-              icon={<Star className="h-8 w-8" />}
-              iconBg="bg-gradient-to-br from-yellow-400 to-orange-500"
-              title={homeContent.feature1Title}
-              description={homeContent.feature1Description}
-            />
-            
-            <FeatureCard
-              icon={<Shield className="h-8 w-8" />}
-              iconBg="bg-gradient-to-br from-green-400 to-emerald-500"
-              title={homeContent.feature2Title}
-              description={homeContent.feature2Description}
-            />
-            
-            <FeatureCard
-              icon={<Zap className="h-8 w-8" />}
-              iconBg="bg-gradient-to-br from-purple-400 to-pink-500"
-              title={homeContent.feature3Title}
-              description={homeContent.feature3Description}
-            />
+            {loading ? (
+              [1, 2, 3].map((i) => (
+                <div key={i} className="bg-white p-8 rounded-3xl border border-gray-100 shadow-sm animate-pulse">
+                  <div className="w-16 h-16 bg-gray-200 rounded-2xl mx-auto mb-6"></div>
+                  <div className="h-8 bg-gray-200 rounded w-3/4 mx-auto mb-4"></div>
+                  <div className="h-4 bg-gray-200 rounded w-full mb-2"></div>
+                  <div className="h-4 bg-gray-200 rounded w-2/3 mx-auto"></div>
+                </div>
+              ))
+            ) : (
+              <>
+                <FeatureCard
+                  icon={<Star className="h-8 w-8" />}
+                  iconBg="bg-gradient-to-br from-yellow-400 to-orange-500"
+                  title={homeContent?.feature1Title || "Premium Quality"}
+                  description={homeContent?.feature1Description || "Every product undergoes rigorous quality testing to ensure it meets our exceptional standards."}
+                />
+                
+                <FeatureCard
+                  icon={<Shield className="h-8 w-8" />}
+                  iconBg="bg-gradient-to-br from-green-400 to-emerald-500"
+                  title={homeContent?.feature2Title || "Secure & Trusted"}
+                  description={homeContent?.feature2Description || "Advanced security measures protect your data with enterprise-grade encryption and privacy."}
+                />
+                
+                <FeatureCard
+                  icon={<Zap className="h-8 w-8" />}
+                  iconBg="bg-gradient-to-br from-purple-400 to-pink-500"
+                  title={homeContent?.feature3Title || "Lightning Fast"}
+                  description={homeContent?.feature3Description || "Optimized delivery network ensures your orders arrive quickly and in perfect condition."}
+                />
+              </>
+            )}
           </div>
         </div>
       </section>
@@ -261,82 +230,19 @@ export default async function Home() {
 }
 
 function ProductCard({ product }: { product: Product }) {
-  const productPath = `/products/${getProductUrlSegment(product)}`
-  const resolveCardPrices = (p: Product): { price: number; originalPrice: number | null } => {
-    const basePrice = Number(p?.price ?? 0)
-    const baseOriginal = typeof p?.originalPrice === 'number' ? Number(p.originalPrice) : null
-    try {
-      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
-      const originalObj = p?.variantOptionOriginalPrices
-        ? JSON.parse(p.variantOptionOriginalPrices)
-        : (pricesObj?.__original_price_map__ ?? null)
-      const pickFirstNumber = (obj: any): number | null => {
-        if (!obj || typeof obj !== 'object') return null
-        const combo = obj.__combo__
-        if (combo && typeof combo === 'object') {
-          const comboValue = Object.values(combo).find((v) => Number.isFinite(Number(v)))
-          if (comboValue !== undefined) return Number(comboValue)
-        }
-        for (const [k, group] of Object.entries(obj)) {
-          if (k === '__combo__' || k === '__original_price_map__') continue
-          if (!group || typeof group !== 'object') continue
-          const v = Object.values(group).find((x) => Number.isFinite(Number(x)))
-          if (v !== undefined) return Number(v)
-        }
-        return null
-      }
-      const variantPrice = pickFirstNumber(pricesObj)
-      const variantOriginal = pickFirstNumber(originalObj)
-      return {
-        price: variantPrice ?? basePrice,
-        originalPrice: variantOriginal ?? (variantPrice === null ? baseOriginal : null),
-      }
-    } catch {
-      return { price: basePrice, originalPrice: baseOriginal }
-    }
-  }
-  const resolveCardTitle = (p: Product): string => {
-    const baseTitle = (p?.title || '').trim()
-    try {
-      const pricesObj = p?.variantOptionPrices ? JSON.parse(p.variantOptionPrices) : null
-      const titleObj = p?.variantOptionTitles
-        ? JSON.parse(p.variantOptionTitles)
-        : (pricesObj?.__title_map__ ?? null)
-      const pickFirstTitle = (obj: any): string | null => {
-        if (!obj || typeof obj !== 'object') return null
-        const combo = obj.__combo__
-        if (combo && typeof combo === 'object') {
-          const comboValue = Object.values(combo).find((v) => typeof v === 'string' && v.trim())
-          if (typeof comboValue === 'string') return comboValue.trim()
-        }
-        for (const [k, group] of Object.entries(obj)) {
-          if (k === '__combo__' || k === '__title_map__') continue
-          if (!group || typeof group !== 'object') continue
-          const v = Object.values(group).find((x) => typeof x === 'string' && x.trim())
-          if (typeof v === 'string') return v.trim()
-        }
-        return null
-      }
-      return pickFirstTitle(titleObj) || baseTitle
-    } catch {
-      return baseTitle
-    }
-  }
-  const resolvedPrice = resolveCardPrices(product)
-  const resolvedTitle = resolveCardTitle(product)
   return (
-    <Link href={productPath} className="group">
+    <Link href={`/products/${product.slug}`} className="group">
       <div className="card-hover bg-white rounded-3xl border border-gray-100 shadow-sm overflow-hidden transition-all duration-300 group-hover:shadow-xl group-hover:-translate-y-1">
         <div className="aspect-square overflow-hidden bg-gray-100">
           <img 
             src={product.mainImage} 
-            alt={resolvedTitle}
+            alt={product.title}
             className="w-full h-full object-cover group-hover:scale-105 transition-transform duration-300"
           />
         </div>
         <div className="p-6">
           <h3 className="text-xl font-semibold text-gray-900 mb-2 group-hover:text-blue-600 transition-colors">
-            {resolvedTitle}
+            {product.title}
           </h3>
           {(product.reviewCount ?? 0) > 0 && (
             <div className="mb-2 flex items-center gap-2 text-sm">
@@ -351,11 +257,11 @@ function ProductCard({ product }: { product: Product }) {
           )}
           <div className="flex items-center space-x-2">
             <span className="text-2xl font-bold text-gray-900">
-              ${resolvedPrice.price}
+              ${product.price}
             </span>
-            {typeof resolvedPrice.originalPrice === 'number' && resolvedPrice.originalPrice > resolvedPrice.price && (
+            {product.originalPrice && product.originalPrice > product.price && (
               <span className="text-lg text-gray-500 line-through">
-                ${resolvedPrice.originalPrice}
+                ${product.originalPrice}
               </span>
             )}
           </div>

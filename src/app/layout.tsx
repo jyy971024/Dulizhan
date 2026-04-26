@@ -1,18 +1,11 @@
-import type { Metadata, Viewport } from "next";
+export const dynamic = 'force-dynamic'
+import type { Metadata } from "next";
 import { Inter } from "next/font/google";
 import "./globals.css";
 import { SettingsProvider, SiteSettings } from "@/lib/settings";
 import AppShell from "@/components/AppShell";
 import { headers } from "next/headers";
 import Script from "next/script";
-import { cache } from "react";
-
-export const viewport: Viewport = {
-  width: 'device-width',
-  initialScale: 1,
-  maximumScale: 1,
-  userScalable: false,
-}
 
 const inter = Inter({
   subsets: ["latin"],
@@ -41,8 +34,6 @@ const defaultSettings = {
   contactEmail: 'contact@yourbrand.com',
   contactPhone: '+1 (555) 123-4567',
   contactAddress: '123 Main Street, City, State 12345',
-  messageForwardEmail: '',
-  messageForwardEnabled: 'false',
   socialFacebook: 'https://facebook.com/yourbrand',
   socialTwitter: 'https://twitter.com/yourbrand',
   socialInstagram: 'https://instagram.com/yourbrand',
@@ -68,7 +59,7 @@ const defaultSettings = {
 }
 
 // 动态获取站点设置（服务端直接查询数据库）
-const getSettings = cache(async (): Promise<SiteSettings> => {
+async function getSettings(): Promise<SiteSettings> {
   try {
     const settings = await db.siteSettings.findMany()
     
@@ -86,13 +77,13 @@ const getSettings = cache(async (): Promise<SiteSettings> => {
     console.error('Failed to fetch settings from DB:', error);
   }
   return defaultSettings as SiteSettings;
-})
+}
 
 // 服务器端预取导航（首屏初始数据）
-const getNavigation = cache(async () => {
+async function getNavigation() {
   try {
     const baseUrl = await getBaseUrl();
-    const response = await fetch(`${baseUrl}/api/navigation`, { next: { revalidate: 3600 } });
+    const response = await fetch(`${baseUrl}/api/navigation`, { cache: 'no-store' });
     if (response.ok) {
       const data = await response.json();
       return Array.isArray(data) ? data : [];
@@ -101,7 +92,7 @@ const getNavigation = cache(async () => {
     console.error('Failed to fetch navigation:', error);
   }
   return [];
-})
+}
 
 export async function generateMetadata(): Promise<Metadata> {
   const settings = await getSettings();
@@ -135,61 +126,47 @@ export async function generateMetadata(): Promise<Metadata> {
 export default async function RootLayout({ children }: Readonly<{ children: React.ReactNode; }>) {
   const settings = await getSettings();
   const initialNavItems = await getNavigation();
-  function extractScriptsAndRemainder(html: string): { scripts: Array<{ src?: string; content?: string; attrs: Record<string, string> }>, remainder: string } {
-    if (!html || typeof html !== 'string') return { scripts: [], remainder: '' }
+  function extractScripts(html: string): Array<{ src?: string; content?: string; attrs: Record<string, string> }> {
+    if (!html || typeof html !== 'string') return []
     const scripts: Array<{ src?: string; content?: string; attrs: Record<string, string> }> = []
     const regexp = /<script([^>]*)>([\s\S]*?)<\/script>/gi
-    const remainder = html.replace(regexp, (_full, attrStrRaw, contentRaw) => {
-      const attrStr = attrStrRaw || ''
-      const content = contentRaw || ''
+    let match: RegExpExecArray | null
+    while ((match = regexp.exec(html))) {
+      const attrStr = match[1] || ''
+      const content = match[2] || ''
       const attrs: Record<string, string> = {}
-      attrStr.replace(
-        /(\w+)(\s*=\s*"([^"]*)"|\s*=\s*'([^']*)'|\s*=\s*([^\s"'>]+))?/g,
-        (_match: string, k: string, _v: string, q1?: string, q2?: string, q3?: string) => {
+      attrStr.replace(/(\w+)(\s*=\s*"([^"]*)"|\s*=\s*'([^']*)'|\s*=\s*([^\s"'>]+))?/g, (_m, k, _v, q1, q2, q3) => {
         const val = q1 ?? q2 ?? q3 ?? ''
         attrs[k] = val
         return ''
-        }
-      )
+      })
       const src = attrs.src
       scripts.push({ src, content, attrs })
-      return ''
-    })
-    return { scripts, remainder }
+    }
+    if (scripts.length === 0 && html.trim()) {
+      scripts.push({ content: html, attrs: {} })
+    }
+    return scripts
   }
 
-  const headScripts = extractScriptsAndRemainder((settings as any).analyticsHeadHtml || '')
-  const googleScripts = extractScriptsAndRemainder((settings as any).analyticsGoogleHtml || '')
-  const bodyScripts = extractScriptsAndRemainder((settings as any).analyticsBodyHtml || '')
-  const sanitizedBodyHtml = bodyScripts.remainder
-    .replace(/<\/?(html|head|body)[^>]*>/gi, '')
-    .replace(/<meta[^>]*name=['"]viewport['"][^>]*>/gi, '')
-
+  const headScripts = extractScripts((settings as any).analyticsHeadHtml || '')
+  const googleScripts = extractScripts((settings as any).analyticsGoogleHtml || '')
   return (
     <html lang="en">
-      <head>
-        {headScripts.scripts.concat(googleScripts.scripts).map((s, idx) => (
-          s.src ? (
-            <Script key={`a-head-${idx}`} src={s.src} strategy="afterInteractive" />
-          ) : (
-            <Script key={`a-head-inline-${idx}`} id={`a-head-inline-${idx}`} strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: s.content || '' }} />
-          )
-        ))}
-      </head>
+      {headScripts.concat(googleScripts).map((s, idx) => (
+        s.src ? (
+          <Script key={`a-head-${idx}`} src={s.src} strategy="beforeInteractive" />
+        ) : (
+          <Script key={`a-head-inline-${idx}`} id={`a-head-inline-${idx}`} strategy="beforeInteractive" dangerouslySetInnerHTML={{ __html: s.content || '' }} />
+        )
+      ))}
       <body suppressHydrationWarning className={`${inter.variable} font-sans antialiased bg-white text-gray-900`}>
         <SettingsProvider initialSettings={settings}>
           <AppShell initialNavItems={initialNavItems}>
             {children}
           </AppShell>
+          <div dangerouslySetInnerHTML={{ __html: (settings as any).analyticsBodyHtml || '' }} />
         </SettingsProvider>
-        {sanitizedBodyHtml ? <div dangerouslySetInnerHTML={{ __html: sanitizedBodyHtml }} /> : null}
-        {bodyScripts.scripts.map((s, idx) => (
-          s.src ? (
-            <Script key={`a-body-${idx}`} src={s.src} strategy="afterInteractive" />
-          ) : (
-            <Script key={`a-body-inline-${idx}`} id={`a-body-inline-${idx}`} strategy="afterInteractive" dangerouslySetInnerHTML={{ __html: s.content || '' }} />
-          )
-        ))}
       </body>
     </html>
   );
